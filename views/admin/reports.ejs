@@ -1,0 +1,871 @@
+<div class="page-bar">
+  <div>
+    <h1>รายงาน</h1>
+
+    <div class="muted small">
+      รายงาน <%= id %>: <%= report.title %>
+    </div>
+  </div>
+
+  <a
+    class="btn"
+    href="/admin/reports<%= qs({ r: id, ...params, export: 'csv' }) %>"
+  >
+    Export CSV
+  </a>
+</div>
+
+
+<!-- =====================================================
+     เมนูเลือกรายงาน
+     ===================================================== -->
+
+<nav
+  class="chips"
+  aria-label="เลือกรายงาน"
+>
+  <% reports.forEach((r) => { %>
+
+    <a
+      class="chip"
+      href="/admin/reports?r=<%= r.id %>"
+      <%- r.id === id ? 'aria-current="page"' : '' %>
+    >
+      <%= r.id %>. <%= r.title %>
+    </a>
+
+  <% }) %>
+</nav>
+
+
+<!-- =====================================================
+     FILTER
+     ===================================================== -->
+
+<form
+  class="filters"
+  method="get"
+  action="/admin/reports"
+>
+
+  <input
+    type="hidden"
+    name="r"
+    value="<%= id %>"
+  >
+
+
+  <% if (report.filter === 'year') { %>
+
+    <div class="field">
+
+      <label for="year">
+        ปี (ค.ศ.)
+      </label>
+
+      <input
+        class="input"
+        type="number"
+        id="year"
+        name="year"
+        value="<%= params.year %>"
+        min="2000"
+        max="2100"
+      >
+
+    </div>
+
+  <% } else { %>
+
+    <div class="field">
+
+      <label for="from">
+        วันที่เริ่มต้น
+      </label>
+
+      <input
+        class="input"
+        type="date"
+        id="from"
+        name="from"
+        value="<%= params.from %>"
+      >
+
+    </div>
+
+
+    <div class="field">
+
+      <label for="to">
+        วันที่สิ้นสุด
+      </label>
+
+      <input
+        class="input"
+        type="date"
+        id="to"
+        name="to"
+        value="<%= params.to %>"
+      >
+
+    </div>
+
+  <% } %>
+
+
+  <div class="btn-row">
+
+    <button
+      class="btn btn-primary"
+      type="submit"
+    >
+      แสดงรายงาน
+    </button>
+
+  </div>
+
+</form>
+
+
+<!-- =====================================================
+     หมายเหตุ
+     ===================================================== -->
+
+<p class="muted small">
+
+  <%= result.note %>
+
+  ·
+
+  <%= report.filter === 'year'
+    ? `ปี ${params.year}`
+    : `${fmtDate(params.from)} – ${fmtDate(params.to)}`
+  %>
+
+</p>
+
+
+<!-- =====================================================
+     KPI CARDS
+     ===================================================== -->
+
+<div class="kpis">
+
+  <% result.cards.forEach(([label, value]) => { %>
+
+    <div class="kpi">
+
+      <div class="k-label">
+        <%= label %>
+      </div>
+
+      <div class="k-value">
+        <%= Number(value).toLocaleString('th-TH') %>
+      </div>
+
+    </div>
+
+  <% }) %>
+
+</div>
+
+
+<!-- =====================================================
+     REPORT 1
+     กราฟขึ้น / ลง แยกกัน
+     ===================================================== -->
+
+<% if (id === 1 && result.charts) { %>
+
+  <%
+    const boardingHasData =
+      result.charts.boarding.datasets.some(
+        (d) =>
+          d.data.some(
+            (v) => Number(v) > 0
+          )
+      );
+
+    const alightingHasData =
+      result.charts.alighting.datasets.some(
+        (d) =>
+          d.data.some(
+            (v) => Number(v) > 0
+          )
+      );
+  %>
+
+
+  <!-- ===================================================
+       กราฟที่ 1 : จำนวนผู้โดยสารขึ้น
+       =================================================== -->
+
+  <div class="card mb-4">
+
+    <h2 class="card-title">
+      <%= result.charts.boarding.title %>
+    </h2>
+
+
+    <% if (boardingHasData) { %>
+
+      <div
+        class="chart-box"
+        style="height:430px"
+      >
+
+        <canvas
+          id="boardingChart"
+          role="img"
+          aria-label="กราฟจำนวนผู้โดยสารขึ้นรายเดือน"
+        ></canvas>
+
+      </div>
+
+    <% } else { %>
+
+      <div class="empty">
+
+        <strong>
+          ไม่มีข้อมูลผู้โดยสารขึ้นในปีนี้
+        </strong>
+
+        <div class="muted small">
+          ลองเลือกปีอื่น หรือเพิ่มข้อมูลการเดินทางและ Check-in
+        </div>
+
+      </div>
+
+    <% } %>
+
+  </div>
+
+
+  <!-- ===================================================
+       กราฟที่ 2 : จำนวนผู้โดยสารลง
+       =================================================== -->
+
+  <div class="card mb-4">
+
+    <h2 class="card-title">
+      <%= result.charts.alighting.title %>
+    </h2>
+
+
+    <% if (alightingHasData) { %>
+
+      <div
+        class="chart-box"
+        style="height:430px"
+      >
+
+        <canvas
+          id="alightingChart"
+          role="img"
+          aria-label="กราฟจำนวนผู้โดยสารลงรายเดือน"
+        ></canvas>
+
+      </div>
+
+    <% } else { %>
+
+      <div class="empty">
+
+        <strong>
+          ไม่มีข้อมูลผู้โดยสารลงในปีนี้
+        </strong>
+
+        <div class="muted small">
+          ลองเลือกปีอื่น หรือเพิ่มข้อมูลการเดินทางและ Check-in
+        </div>
+
+      </div>
+
+    <% } %>
+
+  </div>
+
+
+<!-- =====================================================
+     REPORT 2–7
+     ใช้กราฟเดิม
+     ===================================================== -->
+
+<% } else { %>
+
+  <%
+    const hasData =
+      result.chart &&
+      result.chart.datasets.some(
+        (d) =>
+          d.data.some(
+            (v) => Number(v) > 0
+          )
+      );
+  %>
+
+
+  <div class="card mb-4">
+
+    <h2 class="card-title">
+
+      <%= report.title %>
+
+      <% if (
+        result.chart &&
+        result.chart.caption
+      ) { %>
+
+        <span class="muted small">
+          — <%= result.chart.caption %>
+        </span>
+
+      <% } %>
+
+    </h2>
+
+
+    <% if (hasData) { %>
+
+      <div class="chart-box">
+
+        <canvas
+          id="chart"
+          role="img"
+          aria-label="กราฟ <%= report.title %>"
+        ></canvas>
+
+      </div>
+
+    <% } else { %>
+
+      <div class="empty">
+
+        <strong>
+          ไม่มีข้อมูลในช่วงที่เลือก
+        </strong>
+
+        <div class="muted small">
+          ลองเปลี่ยนปีหรือช่วงวันที่
+        </div>
+
+      </div>
+
+    <% } %>
+
+  </div>
+
+<% } %>
+
+
+<!-- =====================================================
+     TABLE
+     ===================================================== -->
+
+<div class="table-wrap">
+
+  <table class="table">
+
+    <caption class="sr-only">
+      ตาราง<%= report.title %>
+    </caption>
+
+
+    <thead>
+
+      <tr>
+
+        <% result.columns.forEach((c) => { %>
+
+          <th
+            class="<%= c.align || '' %>"
+            scope="col"
+          >
+            <%= c.label %>
+          </th>
+
+        <% }) %>
+
+      </tr>
+
+    </thead>
+
+
+    <tbody>
+
+      <% if (!result.rows.length) { %>
+
+        <tr>
+
+          <td
+            colspan="<%= result.columns.length %>"
+            class="center muted"
+          >
+            ไม่มีข้อมูล
+          </td>
+
+        </tr>
+
+      <% } %>
+
+
+      <% result.rows.forEach((r) => { %>
+
+        <tr
+          <%- r._subtotal
+            ? 'style="font-weight:700;background:var(--surface-2)"'
+            : ''
+          %>
+        >
+
+          <% result.columns.forEach((c) => { %>
+
+            <td class="<%= c.align || '' %>">
+
+              <% if (
+                c.align === 'right' &&
+                r[c.key] !== undefined &&
+                r[c.key] !== null &&
+                r[c.key] !== ''
+              ) { %>
+
+                <%= Number(r[c.key]).toLocaleString('th-TH') %>
+
+              <% } else { %>
+
+                <%= r[c.key] ?? '' %>
+
+              <% } %>
+
+            </td>
+
+          <% }) %>
+
+        </tr>
+
+      <% }) %>
+
+    </tbody>
+
+
+    <tfoot>
+
+      <tr>
+
+        <% result.columns.forEach((c) => { %>
+
+          <td class="<%= c.align || '' %>">
+
+            <% if (
+              c.align === 'right' &&
+              result.totals[c.key] !== undefined &&
+              result.totals[c.key] !== null &&
+              result.totals[c.key] !== ''
+            ) { %>
+
+              <strong>
+                <%= Number(
+                  result.totals[c.key]
+                ).toLocaleString('th-TH') %>
+              </strong>
+
+            <% } else { %>
+
+              <strong>
+                <%= result.totals[c.key] ?? '' %>
+              </strong>
+
+            <% } %>
+
+          </td>
+
+        <% }) %>
+
+      </tr>
+
+    </tfoot>
+
+  </table>
+
+</div>
+
+
+<!-- =====================================================
+     CHART.JS
+     ===================================================== -->
+
+<%
+  const needChartJs =
+    (
+      id === 1 &&
+      result.charts &&
+      (
+        result.charts.boarding.datasets.some(
+          (d) => d.data.some(
+            (v) => Number(v) > 0
+          )
+        )
+        ||
+        result.charts.alighting.datasets.some(
+          (d) => d.data.some(
+            (v) => Number(v) > 0
+          )
+        )
+      )
+    )
+    ||
+    (
+      id !== 1 &&
+      result.chart &&
+      result.chart.datasets.some(
+        (d) => d.data.some(
+          (v) => Number(v) > 0
+        )
+      )
+    );
+%>
+
+
+<% if (needChartJs) { %>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+
+<script>
+
+(function () {
+
+  if (
+    typeof Chart === 'undefined'
+  ) {
+    return;
+  }
+
+
+  /* =====================================================
+     สีของแต่ละสถานี
+     ===================================================== */
+
+  const SERIES = [
+    '#2a78d6',
+    '#eb6834',
+    '#1baf7a',
+    '#eda100',
+    '#e87ba4',
+    '#4a3aa7',
+    '#e34948',
+    '#00a6a6',
+    '#8d6e63',
+    '#607d8b',
+    '#7cb342',
+    '#ab47bc'
+  ];
+
+
+  const css =
+    getComputedStyle(
+      document.documentElement
+    );
+
+
+  Chart.defaults.font.family =
+    css.getPropertyValue(
+      '--font'
+    );
+
+
+  Chart.defaults.color =
+    '#52514e';
+
+
+  /* =====================================================
+     ฟังก์ชันสร้างกราฟ
+     ===================================================== */
+
+  function createBarChart(
+    canvasId,
+    chartData
+  ) {
+
+    const canvas =
+      document.getElementById(
+        canvasId
+      );
+
+
+    if (!canvas) {
+      return;
+    }
+
+
+    new Chart(
+      canvas,
+      {
+
+        type:
+          'bar',
+
+
+        data: {
+
+          labels:
+            chartData.labels,
+
+
+          datasets:
+            chartData.datasets.map(
+              (d, i) => ({
+
+                ...d,
+
+                backgroundColor:
+                  SERIES[
+                    i % SERIES.length
+                  ],
+
+                borderColor:
+                  '#ffffff',
+
+                borderWidth:
+                  1,
+
+                borderRadius:
+                  3,
+
+                borderSkipped:
+                  'bottom',
+
+                maxBarThickness:
+                  28,
+              })
+            ),
+        },
+
+
+        options: {
+
+          responsive:
+            true,
+
+          maintainAspectRatio:
+            false,
+
+
+          interaction: {
+
+            mode:
+              'index',
+
+            intersect:
+              false,
+          },
+
+
+          plugins: {
+
+            legend: {
+
+              display:
+                chartData.datasets.length > 1,
+
+              position:
+                'right',
+
+              align:
+                'center',
+
+              labels: {
+
+                boxWidth:
+                  12,
+
+                boxHeight:
+                  12,
+
+                padding:
+                  14,
+
+                useBorderRadius:
+                  true,
+
+                borderRadius:
+                  2,
+              },
+            },
+
+
+            tooltip: {
+
+              backgroundColor:
+                '#0b0b0b',
+
+              padding:
+                10,
+
+              boxPadding:
+                4,
+
+              callbacks: {
+
+                label:
+                  function (context) {
+
+                    const value =
+                      Number(
+                        context.raw || 0
+                      ).toLocaleString(
+                        'th-TH'
+                      );
+
+
+                    return (
+                      context.dataset.label +
+                      ': ' +
+                      value +
+                      ' คน'
+                    );
+                  },
+              },
+            },
+          },
+
+
+          scales: {
+
+            x: {
+
+              grid: {
+                display:
+                  false,
+              },
+
+
+              ticks: {
+
+                color:
+                  '#52514e',
+
+                maxRotation:
+                  0,
+
+                minRotation:
+                  0,
+              },
+            },
+
+
+            y: {
+
+              beginAtZero:
+                true,
+
+
+              grid: {
+
+                color:
+                  '#eceae6',
+              },
+
+
+              border: {
+
+                display:
+                  false,
+              },
+
+
+              ticks: {
+
+                precision:
+                  0,
+
+                color:
+                  '#898781',
+              },
+
+
+              title: {
+
+                display:
+                  true,
+
+                text:
+                  'จำนวนคน',
+              },
+            },
+          },
+        },
+      }
+    );
+  }
+
+
+  /* =====================================================
+     REPORT 1
+     ===================================================== */
+
+  <% if (
+    id === 1 &&
+    result.charts
+  ) { %>
+
+
+    const boardingChart =
+      <%- JSON.stringify(
+        result.charts.boarding
+      ).replace(
+        /</g,
+        '\\u003c'
+      ) %>;
+
+
+    const alightingChart =
+      <%- JSON.stringify(
+        result.charts.alighting
+      ).replace(
+        /</g,
+        '\\u003c'
+      ) %>;
+
+
+    createBarChart(
+      'boardingChart',
+      boardingChart
+    );
+
+
+    createBarChart(
+      'alightingChart',
+      alightingChart
+    );
+
+
+  /* =====================================================
+     REPORT 2–7
+     ===================================================== */
+
+  <% } else { %>
+
+
+    const chart =
+      <%- JSON.stringify(
+        result.chart
+      ).replace(
+        /</g,
+        '\\u003c'
+      ) %>;
+
+
+    createBarChart(
+      'chart',
+      chart
+    );
+
+
+  <% } %>
+
+})();
+
+</script>
+
+<% } %>

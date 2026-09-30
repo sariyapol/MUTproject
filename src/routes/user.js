@@ -1,0 +1,221 @@
+const express = require('express');
+const QRCode = require('qrcode');
+const db = require('../db');
+const { requireLogin } = require('../middleware/auth');
+const { ITEM_SELECT, getTrip, getTripStops, segment, routeSequences } = require('../lib/queries');
+const { today, qs } = require('../lib/helpers');
+const { ensureTrips, MAX_DAYS } = require('../lib/schedule');
+const { verifyPassword, hashPassword } = require('../lib/password');
+
+const router = express.Router();
+router.use(requireLogin);
+
+// รายการที่ "กำลังจะถึง": ยืนยัน, ยังไม่ Check-in, รอบยังไม่เสร็จสิ้น/ยกเลิก
+const UPCOMING = `t.status = 'ยืนยัน' AND t.checkin_at IS NULL AND tr.status IN ('เปิด', 'กำลังเดินทาง')`;
+
+// 7.1 หน้าหลัก
+router.get('/', async (req, res) => {
+  const uid = req.session.user.user_id;
+  const next = await db.one(
+    `${ITEM_SELECT} WHERE t.user_id = ? AND ${UPCOMING} AND t.board_at >= CURDATE()
+     ORDER BY t.board_at LIMIT 1`,
+    [uid],
+  );
+  const { n } = await db.one(
+    `SELECT COUNT(*) AS n FROM v_booking_item_times t JOIN trips tr ON tr.trip_id = t.trip_id
+      WHERE t.user_id = ? AND ${UPCOMING}`,
+    [uid],
+  );
+  res.page('user/home', { title: 'หน้าหลัก', next, upcomingCount: n });
+});
+
+// 7.2 ค้นหารอบรถ
+router.get('/search', async (req, res) => {
+  const board = req.query.board || '';
+  const alight = req.query.alight || '';
+  const date = req.query.date || today();
+  const stops = await db.query('SELECT stop_id, stop_name FROM stops ORDER BY stop_id');
+  const sequences = await routeSequences();
+
+  let results = null;
+  let error = null;
+  if (req.query.board !== undefined) {
+    if (!board || !alight) error = 'กรุณาเลือกจุดขึ้นและจุดลง';
+    else if (board === alight) error = 'จุดขึ้นและจุดลงต้องไม่ใช่จุดเดียวกัน';
+    else if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) error = 'กรุณาเลือกวันที่';
+    else if (date < today()) error = 'ไม่สามารถค้นหารอบของวันที่ผ่านมาแล้ว';
+    else if (date > today(MAX_DAYS)) error = `ค้นหาล่วงหน้าได้ไม่เกิน ${MAX_DAYS} วัน`;
+    else {
+      await ensureTrips(date, 1); // วันที่ไกลกว่าที่สร้างไว้ล่วงหน้า → สร้างจากตารางเวลาให้ก่อน
+      results = await db.proc.searchTrips(date, board, alight);
+    }
+  }
+  res.page('user/search', {
+    title: 'ค้นหารอบรถ', stops, sequences, board, alight, date, minDate: today(), maxDate: today(MAX_DAYS), results, error,
+  });
+});
+
+// รอบ + จุดขึ้น/ลงที่เลือก + เหตุผลถ้าจองไม่ได้
+async function bookingContext(tripId, board, alight) {
+  const trip = await getTrip(tripId);
+  if (!trip) return null;
+  const stops = await getTripStops(trip.trip_id);
+  const seg = segment(stops, board, alight);
+
+  let blocked = null;
+  if (!seg.board || !seg.alight) blocked = 'เลือกจุดขึ้นและจุดลงจากหน้าค้นหาก่อนจอง';
+  else if (trip.status !== 'เปิด') blocked = 'รอบนี้ไม่เปิดให้จอง';
+  else if (!seg.board.bookable) blocked = 'ปิดรับจองแล้ว (ต้องจองก่อนรถถึงจุดขึ้นอย่างน้อย 20 นาที)';
+  else if (trip.remaining_seats <= 0) blocked = 'ที่นั่งเต็ม';
+
+  return { trip, stops, seg, blocked, maxSeats: Math.max(0, Math.min(4, trip.remaining_seats)) };
+}
+
+// 7.3 รายละเอียดรอบ
+router.get('/trips/:id', async (req, res, next) => {
+  const ctx = await bookingContext(req.params.id, req.query.board, req.query.alight);
+  if (!ctx) return next();
+  res.page('user/trip', {
+    title: `รอบ ${ctx.trip.trip_id}`, ...ctx,
+    bookQs: qs({ board: req.query.board, alight: req.query.alight }),
+    backQs: qs({ board: req.query.board, alight: req.query.alight, date: ctx.trip.trip_date }),
+  });
+});
+
+// 8.1 เลือกจำนวนที่นั่ง
+router.get('/book/:id', async (req, res, next) => {
+  const { board, alight } = req.query;
+  const ctx = await bookingContext(req.params.id, board, alight);
+  if (!ctx) return next();
+  if (ctx.blocked) {
+    req.flash('error', ctx.blocked);
+    return res.redirect(`/trips/${ctx.trip.trip_id}${qs({ board, alight })}`);
+  }
+  const seats = Math.min(Math.max(1, Number(req.query.seats) || 1), ctx.maxSeats);
+  res.page('user/book-seats', { title: 'เลือกจำนวนที่นั่ง', ...ctx, board, alight, seats });
+});
+
+// 8.2 ยืนยันการจอง (Summary)
+router.get('/book/:id/confirm', async (req, res, next) => {
+  const { board, alight } = req.query;
+  const ctx = await bookingContext(req.params.id, board, alight);
+  if (!ctx) return next();
+  const seats = Number(req.query.seats);
+  if (ctx.blocked || !(seats >= 1 && seats <= ctx.maxSeats)) {
+    req.flash('error', ctx.blocked || `เลือกได้ 1–${ctx.maxSeats} ที่นั่ง`);
+    return res.redirect(`/book/${ctx.trip.trip_id}${qs({ board, alight })}`);
+  }
+  res.page('user/book-confirm', { title: 'ยืนยันการจอง', ...ctx, board, alight, seats });
+});
+
+// สร้าง การจอง + รายการจอง + QR (procedure ตรวจที่นั่ง/เวลาอีกครั้งภายใน transaction)
+router.post('/book/:id', async (req, res) => {
+  const { board, alight } = req.body;
+  const seats = Number(req.body.seats);
+  try {
+    const out = await db.proc.createBooking({
+      user: req.session.user.user_id, trip: req.params.id, board, alight, seats,
+    });
+    res.redirect(`/my/items/${out.item_id}?new=1`);
+  } catch (err) {
+    if (!err.sqlState) throw err;
+    req.flash('error', db.errorMessage(err));
+    res.redirect(`/book/${encodeURIComponent(req.params.id)}${qs({ board, alight })}`);
+  }
+});
+
+// 8.3 รายละเอียดรายการจอง + QR Code (หลังจองสำเร็จ / ดู QR)
+router.get('/my/items/:id', async (req, res, next) => {
+  const item = await db.one(`${ITEM_SELECT} WHERE t.booking_item_id = ? AND t.user_id = ?`,
+    [req.params.id, req.session.user.user_id]);
+  if (!item) return next();
+  const qr = await QRCode.toDataURL(item.qr_code, { width: 440, margin: 1 });
+  res.page('user/item', {
+    title: `รายการจอง ${item.booking_item_id}`, item, qr, isNew: !!req.query.new, canCancel: canCancel(item),
+  });
+});
+
+// ยกเลิกได้เมื่อ ยืนยัน + ยังไม่ Check-in + รอบยังไม่เริ่มเดินทาง
+const canCancel = (i) => i.status === 'ยืนยัน' && !i.checkin_at && i.trip_status === 'เปิด';
+
+// 8.4 การจองของฉัน
+const TABS = [
+  { key: 'upcoming', label: 'กำลังจะถึง' },
+  { key: 'done', label: 'เสร็จแล้ว' },
+  { key: 'cancelled', label: 'ยกเลิก' },
+];
+
+router.get('/my', async (req, res) => {
+  const tab = TABS.some((t) => t.key === req.query.tab) ? req.query.tab : 'upcoming';
+  const rows = await db.query(
+    `SELECT x.* FROM (
+       ${ITEM_SELECT.replace('SELECT', `SELECT CASE
+         WHEN t.status = 'ยกเลิก' OR tr.status = 'ยกเลิก' THEN 'cancelled'
+         WHEN t.checkin_at IS NOT NULL OR t.status = 'No Show' OR tr.status = 'เสร็จสิ้น' THEN 'done'
+         ELSE 'upcoming' END AS tab,`)}
+       WHERE t.user_id = ?
+     ) x ORDER BY x.board_at DESC`,
+    [req.session.user.user_id],
+  );
+  const counts = Object.fromEntries(TABS.map((t) => [t.key, rows.filter((r) => r.tab === t.key).length]));
+  let items = rows.filter((r) => r.tab === tab);
+  if (tab === 'upcoming') items = items.reverse(); // ใกล้ที่สุดก่อน
+  items.forEach((i) => { i.canCancel = canCancel(i); });
+  res.page('user/my', { title: 'การจองของฉัน', tabs: TABS, tab, counts, items });
+});
+
+// 8.5 ยกเลิกการจอง
+router.post('/my/items/:id/cancel', async (req, res) => {
+  const id = req.params.id;
+  const item = await db.one(`${ITEM_SELECT} WHERE t.booking_item_id = ? AND t.user_id = ?`, [id, req.session.user.user_id]);
+  if (!item || !canCancel(item)) {
+    req.flash('error', 'รายการนี้ยกเลิกไม่ได้');
+    return res.redirect('/my');
+  }
+  try {
+    await db.proc.cancelItem(id, req.session.user.user_id);
+    req.flash('success', `ยกเลิกรายการจอง ${id} แล้ว — คืน ${item.seats} ที่นั่งให้รอบ ${item.depart_time.slice(0, 5)} ${item.route_name}`);
+    res.redirect('/my?tab=cancelled');
+  } catch (err) {
+    if (!err.sqlState) throw err;
+    req.flash('error', db.errorMessage(err));
+    res.redirect('/my');
+  }
+});
+
+// โปรไฟล์
+async function profileData(uid) {
+  return db.one(
+    `SELECT u.user_id, u.name, u.email, u.username, d.department_name, e.phone, p.position_name
+       FROM users u
+       JOIN departments d ON d.department_id = u.department_id
+       LEFT JOIN employees e ON e.user_id = u.user_id
+       LEFT JOIN positions p ON p.position_id = e.position_id
+      WHERE u.user_id = ?`,
+    [uid],
+  );
+}
+
+router.get('/profile', async (req, res) => {
+  const profile = await profileData(req.session.user.user_id);
+  res.page('user/profile', { title: 'โปรไฟล์', profile, errors: {} });
+});
+
+router.post('/profile/password', async (req, res) => {
+  const uid = req.session.user.user_id;
+  const { current, password, confirm } = req.body;
+  const errors = {};
+  const row = await db.one('SELECT password_hash FROM users WHERE user_id = ?', [uid]);
+  if (!(await verifyPassword(String(current || ''), row.password_hash))) errors.current = 'password ปัจจุบันไม่ถูกต้อง';
+  if (!password || String(password).length < 4) errors.password = 'password ใหม่ต้องมีอย่างน้อย 4 ตัวอักษร';
+  else if (password !== confirm) errors.confirm = 'ยืนยัน password ไม่ตรงกัน';
+  if (Object.keys(errors).length) {
+    const profile = await profileData(uid);
+    return res.status(422).page('user/profile', { title: 'โปรไฟล์', profile, errors });
+  }
+  await db.query('UPDATE users SET password_hash = ? WHERE user_id = ?', [await hashPassword(password), uid]);
+  req.flash('success', 'เปลี่ยน password เรียบร้อยแล้ว');
+  res.redirect('/profile');
+});
+
+module.exports = router;
